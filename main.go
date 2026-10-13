@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.0.0"
+const AgentVersion = "1.1.0"
 const PollSeconds = 30
 
 // ---- Armazenamento local -------------------------------------------
@@ -72,16 +72,25 @@ func logf(format string, a ...any) {
 	}
 }
 
+// psVisible roda PowerShell SEM esconder a janela — necessário para que
+// caixas de diálogo (InputBox/MessageBox) apareçam de fato na tela.
+func psVisible(script string) string {
+	c := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script)
+	out, _ := c.Output()
+	return strings.TrimSpace(string(out))
+}
+
 // askCodeDialog mostra uma caixa para digitar o código (sem console).
 func askCodeDialog() string {
-	out := ps(`Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.Interaction]::InputBox("Digite o código de vínculo do suporte (ex.: K7QM-4XPA):","Hub360 - Agente de Suporte","")`)
+	logf("Pedindo código de vínculo na tela…")
+	out := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Digite o codigo de vinculo do suporte (ex.: K7QM-4XPA):","Hub360 - Agente de Suporte","")`)
 	return strings.TrimSpace(out)
 }
 
 // notify mostra um aviso rápido na tela.
 func notify(title, msg string) {
 	safe := strings.ReplaceAll(msg, "\"", "'")
-	go ps(`(New-Object -ComObject Wscript.Shell).Popup("` + safe + `",8,"` + strings.ReplaceAll(title, "\"", "'") + `",64)`)
+	go psVisible(`Add-Type -AssemblyName System.Windows.Forms | Out-Null; [System.Windows.Forms.MessageBox]::Show("` + safe + `","` + strings.ReplaceAll(title, "\"", "'") + `")`)
 }
 
 func loadConfig() (*Config, error) {
@@ -298,10 +307,16 @@ func execCommand(cmd map[string]any) (status, result string, sysinfo map[string]
 		run("rundll32.exe", "user32.dll,LockWorkStation")
 		return "done", "Tela bloqueada.", nil
 	case "restart":
-		go func() { time.Sleep(2 * time.Second); run("shutdown", "/r", "/t", "5", "/c", "Reinício solicitado pelo suporte") }()
+		go func() {
+			time.Sleep(2 * time.Second)
+			run("shutdown", "/r", "/t", "5", "/c", "Reinício solicitado pelo suporte")
+		}()
 		return "done", "Reinício agendado (5s).", nil
 	case "shutdown":
-		go func() { time.Sleep(2 * time.Second); run("shutdown", "/s", "/t", "5", "/c", "Desligamento solicitado pelo suporte") }()
+		go func() {
+			time.Sleep(2 * time.Second)
+			run("shutdown", "/s", "/t", "5", "/c", "Desligamento solicitado pelo suporte")
+		}()
 		return "done", "Desligamento agendado (5s).", nil
 	case "logoff":
 		go func() { time.Sleep(2 * time.Second); run("shutdown", "/l") }()
