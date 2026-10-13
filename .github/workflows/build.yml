@@ -23,6 +23,7 @@ jobs:
           go get github.com/pion/webrtc/v4
           go get github.com/kbinani/screenshot
           go get golang.org/x/image/draw
+          go get github.com/getlantern/systray
           go mod tidy
 
       - name: Compilar para Windows 64 bits

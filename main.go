@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.2.0"
+const AgentVersion = "1.3.0"
 const PollSeconds = 15
 
 // ---- Armazenamento local -------------------------------------------
@@ -475,6 +475,50 @@ func pollLoop(c *Config) {
 	}
 }
 
+// openTicketDialog: o cliente abre um chamado pela bandeja.
+func openTicketDialog(c *Config) {
+	title := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Resuma o problema (ex.: Impressora nao imprime):","Abrir chamado de suporte","")`)
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return
+	}
+	desc := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Descreva com mais detalhes (opcional):","Abrir chamado de suporte","")`)
+	name := os.Getenv("USERNAME")
+	resp, err := postJSON("/agent/ticket", map[string]any{
+		"token":         c.Token,
+		"customer_name": name,
+		"title":         title,
+		"description":   strings.TrimSpace(desc) + "\n\n(Aberto pelo Agente de Suporte)",
+	})
+	if err != nil || resp == nil {
+		notify("Suporte", "Não foi possível abrir o chamado agora. Tente novamente.")
+		return
+	}
+	if num, ok := resp["ticket_number"].(string); ok && num != "" {
+		notify("Chamado aberto", "Seu chamado "+num+" foi registrado. Em breve o suporte entrará em contato.")
+	} else if em, ok := resp["error"].(string); ok {
+		notify("Suporte", "Erro: "+em)
+	} else {
+		notify("Chamado aberto", "Seu chamado foi registrado.")
+	}
+}
+
+// showInfoDialog: mostra informações do PC ao cliente.
+func showInfoDialog() {
+	info := collectSysInfo()
+	get := func(k string) string {
+		if v, ok := info[k]; ok {
+			return fmt.Sprintf("%v", v)
+		}
+		return "-"
+	}
+	msg := "Windows: " + get("os_version") + "\\n" +
+		"Processador: " + get("cpu") + "\\n" +
+		"Memoria: " + get("ram_total") + "\\n" +
+		"Ligado ha: " + get("uptime")
+	psVisible(`Add-Type -AssemblyName System.Windows.Forms | Out-Null; [System.Windows.Forms.MessageBox]::Show("` + msg + `","Informacoes do meu PC")`)
+}
+
 func main() {
 	c, err := loadConfig()
 	if err != nil || c == nil || c.Token == "" {
@@ -489,5 +533,12 @@ func main() {
 	} else {
 		logf("Agente já vinculado ao grupo: %s", c.Group)
 	}
-	pollLoop(c)
+
+	// Garante autoinício com o Windows (copia para local fixo e cria atalho de início).
+	installSelf()
+
+	// Mantém o status/comandos rodando em segundo plano…
+	go pollLoop(c)
+	// …e abre o ícone na bandeja (bloqueia a thread principal).
+	runTray(c)
 }
