@@ -26,6 +26,13 @@ jobs:
           go get github.com/getlantern/systray
           go mod tidy
 
+      - name: Ler a versão do agente
+        id: ver
+        run: |
+          V=$(grep -oP 'AgentVersion = "\K[0-9.]+' main.go)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "$V" > version.txt
+
       - name: Compilar para Windows 64 bits
         env:
           GOOS: windows
@@ -43,5 +50,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: HelpDesk-Hub360 (última versão)
-          files: HelpDesk-Hub360.exe
+          name: HelpDesk-Hub360 v${{ steps.ver.outputs.version }}
+          body: "Versão ${{ steps.ver.outputs.version }} do HelpDesk-Hub360 (agente de suporte)."
+          files: |
+            HelpDesk-Hub360.exe
+            version.txt
