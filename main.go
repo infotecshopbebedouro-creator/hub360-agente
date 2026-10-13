@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.4.1"
+const AgentVersion = "1.4.2"
 const PollSeconds = 15
 
 // ---- Armazenamento local -------------------------------------------
@@ -83,11 +83,61 @@ func psVisible(script string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// askCodeDialog mostra uma caixa para digitar o código (sem console).
+// askCodeDialog mostra uma janela amigável para o cliente digitar o código.
 func askCodeDialog() string {
 	logf("Pedindo código de vínculo na tela…")
-	out := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Digite o codigo de vinculo do suporte (ex.: K7QM-4XPA):","HelpDesk-Hub360","")`)
-	return strings.TrimSpace(out)
+	script := `
+Add-Type -AssemblyName System.Windows.Forms | Out-Null
+Add-Type -AssemblyName System.Drawing | Out-Null
+$f = New-Object System.Windows.Forms.Form
+$f.Text = 'HelpDesk-Hub360 - Suporte Tecnico'
+$f.Size = New-Object System.Drawing.Size(440,230)
+$f.StartPosition = 'CenterScreen'
+$f.FormBorderStyle = 'FixedDialog'
+$f.MaximizeBox = $false
+$f.MinimizeBox = $false
+$f.TopMost = $true
+$t1 = New-Object System.Windows.Forms.Label
+$t1.Text = 'Bem-vindo ao suporte tecnico'
+$t1.Font = New-Object System.Drawing.Font('Segoe UI',12,[System.Drawing.FontStyle]::Bold)
+$t1.AutoSize = $true
+$t1.Location = New-Object System.Drawing.Point(20,20)
+$f.Controls.Add($t1)
+$l = New-Object System.Windows.Forms.Label
+$l.Text = 'Insira abaixo o codigo de acesso que o suporte lhe enviou:'
+$l.AutoSize = $true
+$l.Location = New-Object System.Drawing.Point(20,55)
+$f.Controls.Add($l)
+$tb = New-Object System.Windows.Forms.TextBox
+$tb.Location = New-Object System.Drawing.Point(20,85)
+$tb.Size = New-Object System.Drawing.Size(390,30)
+$tb.Font = New-Object System.Drawing.Font('Segoe UI',16)
+$tb.CharacterCasing = 'Upper'
+$f.Controls.Add($tb)
+$ph = New-Object System.Windows.Forms.Label
+$ph.Text = 'Exemplo: ABCD-1234'
+$ph.ForeColor = [System.Drawing.Color]::Gray
+$ph.AutoSize = $true
+$ph.Location = New-Object System.Drawing.Point(22,120)
+$f.Controls.Add($ph)
+$ok = New-Object System.Windows.Forms.Button
+$ok.Text = 'Confirmar'
+$ok.Size = New-Object System.Drawing.Size(110,36)
+$ok.Location = New-Object System.Drawing.Point(180,150)
+$ok.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$f.Controls.Add($ok)
+$f.AcceptButton = $ok
+$cc = New-Object System.Windows.Forms.Button
+$cc.Text = 'Cancelar'
+$cc.Size = New-Object System.Drawing.Size(110,36)
+$cc.Location = New-Object System.Drawing.Point(300,150)
+$cc.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$f.Controls.Add($cc)
+$f.CancelButton = $cc
+$f.Add_Shown({ $f.Activate(); $tb.Focus() })
+if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $tb.Text }
+`
+	return strings.TrimSpace(psVisible(script))
 }
 
 // notify mostra um aviso rápido na tela.
