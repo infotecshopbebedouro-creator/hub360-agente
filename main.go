@@ -38,8 +38,8 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.1.0"
-const PollSeconds = 30
+const AgentVersion = "1.1.1"
+const PollSeconds = 15
 
 // ---- Armazenamento local -------------------------------------------
 
@@ -453,6 +453,7 @@ func pollLoop(c *Config) {
 			// Sessão de acesso remoto pendente → inicia a transmissão da tela
 			if ps, ok := resp["pending_session"].(map[string]any); ok && ps != nil {
 				if sid, ok := ps["id"].(string); ok && sid != "" {
+					logf("Sessão de tela pendente: %s", sid)
 					go startRemoteSession(c, sid)
 				}
 			}

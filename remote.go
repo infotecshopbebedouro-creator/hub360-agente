@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	frameFPS     = 10
-	jpegQuality  = 40
-	chunkSize    = 60000 // bytes por pedaço no data channel
-	frameMarker  = 0xF1
+	frameFPS    = 10
+	jpegQuality = 40
+	chunkSize   = 60000 // bytes por pedaço no data channel
+	frameMarker = 0xF1
 )
 
 var activeSessions sync.Map // sessionID -> *webrtc.PeerConnection
@@ -40,8 +40,10 @@ func startRemoteSession(cfg *Config, sessionID string) {
 			{URLs: []string{"stun:stun1.l.google.com:19302"}},
 		},
 	}
+	logf("[tela] iniciando sessão %s", sessionID)
 	pc, err := webrtc.NewPeerConnection(api)
 	if err != nil {
+		logf("[tela] erro ao criar PeerConnection: %v", err)
 		return
 	}
 	defer pc.Close()
@@ -63,16 +65,21 @@ func startRemoteSession(cfg *Config, sessionID string) {
 	})
 
 	pc.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		logf("[tela] estado da conexão: %s", s.String())
 		if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateClosed || s == webrtc.PeerConnectionStateDisconnected {
 			closeAll()
 		}
 	})
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		logf("[tela] estado ICE: %s", s.String())
+	})
 
 	// Canais criados pelo técnico
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+		logf("[tela] canal recebido: %s", dc.Label())
 		switch dc.Label() {
 		case "frames":
-			dc.OnOpen(func() { go streamFrames(dc, stop) })
+			dc.OnOpen(func() { logf("[tela] canal frames aberto, iniciando captura"); go streamFrames(dc, stop) })
 		case "input":
 			dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 				handleInput(msg.Data)
@@ -97,22 +104,28 @@ func startRemoteSession(cfg *Config, sessionID string) {
 		}
 	}
 	if offer == "" {
+		logf("[tela] oferta do técnico não chegou (timeout)")
 		return
 	}
+	logf("[tela] oferta recebida, respondendo…")
 
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
+		logf("[tela] erro SetRemoteDescription: %v", err)
 		return
 	}
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
+		logf("[tela] erro CreateAnswer: %v", err)
 		return
 	}
 	if err := pc.SetLocalDescription(answer); err != nil {
+		logf("[tela] erro SetLocalDescription: %v", err)
 		return
 	}
 	postJSON("/agent/signal", map[string]any{
 		"token": cfg.Token, "session_id": sessionID, "answer_sdp": answer.SDP,
 	})
+	logf("[tela] resposta enviada, aguardando conexão…")
 
 	// 2) Continua buscando candidatos do técnico
 	go func() {
@@ -167,11 +180,18 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 		}
 		img := captureFrame(currentMonitor())
 		if img == nil {
+			if frameID == 0 {
+				logf("[tela] captura retornou vazio (monitor %d)", currentMonitor())
+			}
 			continue
 		}
 		var buf bytes.Buffer
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+			logf("[tela] erro ao codificar JPEG: %v", err)
 			continue
+		}
+		if frameID == 0 {
+			logf("[tela] primeiro frame capturado: %dx%d, %d bytes", img.Bounds().Dx(), img.Bounds().Dy(), buf.Len())
 		}
 		data := buf.Bytes()
 		frameID++
@@ -204,19 +224,19 @@ func sendFrame(dc *webrtc.DataChannel, frameID uint32, data []byte) {
 
 // handleInput recebe eventos do navegador (JSON) e injeta no Windows.
 type inputEvent struct {
-	T      string  `json:"t"`      // move, down, up, scroll, key, text
-	X      float64 `json:"x"`      // normalizado 0..1
-	Y      float64 `json:"y"`      // normalizado 0..1
-	Button string  `json:"button"` // left, right, middle
-	Delta  float64 `json:"delta"`  // scroll
-	Key    string  `json:"key"`    // tecla
-	Code   string  `json:"code"`   // código físico
-	Down   bool    `json:"down"`   // keydown/keyup
-	Ctrl   bool    `json:"ctrl"`
-	Alt    bool    `json:"alt"`
-	Shift  bool    `json:"shift"`
-	Text   string  `json:"text"`
-	Monitor int    `json:"monitor"` // troca de monitor (t="monitor")
+	T       string  `json:"t"`      // move, down, up, scroll, key, text
+	X       float64 `json:"x"`      // normalizado 0..1
+	Y       float64 `json:"y"`      // normalizado 0..1
+	Button  string  `json:"button"` // left, right, middle
+	Delta   float64 `json:"delta"`  // scroll
+	Key     string  `json:"key"`    // tecla
+	Code    string  `json:"code"`   // código físico
+	Down    bool    `json:"down"`   // keydown/keyup
+	Ctrl    bool    `json:"ctrl"`
+	Alt     bool    `json:"alt"`
+	Shift   bool    `json:"shift"`
+	Text    string  `json:"text"`
+	Monitor int     `json:"monitor"` // troca de monitor (t="monitor")
 }
 
 func handleInput(data []byte) {
