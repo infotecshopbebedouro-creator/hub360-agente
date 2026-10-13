@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.4.0"
+const AgentVersion = "1.4.1"
 const PollSeconds = 15
 
 // ---- Armazenamento local -------------------------------------------
@@ -75,7 +75,10 @@ func logf(format string, a ...any) {
 // psVisible roda PowerShell SEM esconder a janela — necessário para que
 // caixas de diálogo (InputBox/MessageBox) apareçam de fato na tela.
 func psVisible(script string) string {
-	c := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-STA", "-Command", script)
+	// -WindowStyle Hidden esconde o console preto/azul do PowerShell,
+	// mas as janelas gráficas (InputBox/MessageBox) continuam aparecendo.
+	c := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-STA", "-WindowStyle", "Hidden", "-Command", script)
+	c.SysProcAttr = hideWindow()
 	out, _ := c.Output()
 	return strings.TrimSpace(string(out))
 }
