@@ -46,9 +46,9 @@ func installTarget() string {
 	if base == "" {
 		base = os.Getenv("APPDATA")
 	}
-	dir := filepath.Join(base, "Hub360Agente")
+	dir := filepath.Join(base, "HelpDesk-Hub360")
 	_ = os.MkdirAll(dir, 0o755)
-	return filepath.Join(dir, "AgenteSuporte.exe")
+	return filepath.Join(dir, "HelpDesk-Hub360.exe")
 }
 
 func samePath(a, b string) bool {
@@ -101,7 +101,7 @@ func copyFile(src, dst string) error {
 func setRunKey(target string) {
 	c := exec.Command("reg", "add",
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "Hub360Agente", "/t", "REG_SZ",
+		"/v", "HelpDesk-Hub360", "/t", "REG_SZ",
 		"/d", `"`+target+`"`, "/f")
 	c.SysProcAttr = hideWindow()
 	_ = c.Run()

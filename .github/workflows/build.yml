@@ -1,4 +1,4 @@
-name: Build Agente de Suporte (Windows)
+name: Build HelpDesk-Hub360 (Windows)
 
 on:
   push:
@@ -31,17 +31,17 @@ jobs:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '0'
-        run: go build -ldflags="-s -w -H=windowsgui" -o AgenteSuporte.exe .
+        run: go build -ldflags="-s -w -H=windowsgui" -o HelpDesk-Hub360.exe .
 
       - name: Publicar o executável como artefato
         uses: actions/upload-artifact@v4
         with:
-          name: AgenteSuporte
-          path: AgenteSuporte.exe
+          name: HelpDesk-Hub360
+          path: HelpDesk-Hub360.exe
 
       - name: Publicar em Releases (download fácil)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Agente de Suporte (última versão)
-          files: AgenteSuporte.exe
+          name: HelpDesk-Hub360 (última versão)
+          files: HelpDesk-Hub360.exe

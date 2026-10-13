@@ -25,7 +25,7 @@ func onTrayReady(c *Config) {
 	if name == "" {
 		name = "Suporte Técnico"
 	}
-	systray.SetTooltip(name + " — Agente de Suporte")
+	systray.SetTooltip(name + " — HelpDesk-Hub360")
 
 	mTicket := systray.AddMenuItem("Abrir chamado", "Abrir um chamado de suporte")
 	mInfo := systray.AddMenuItem("Informações do meu PC", "Ver dados do computador")

@@ -1,12 +1,12 @@
 // =====================================================================
-//  Hub360 — Agente de Suporte (Fase 1: vínculo, status, informações, comandos)
+//  HelpDesk-Hub360 de Suporte (Fase 1: vínculo, status, informações, comandos)
 //  Linguagem: Go (gratuito). Gera um .exe único para Windows.
 //
 //  O agente conversa SÓ com o canal da Cloudflare (Worker), nunca direto
 //  com o Base44. Fluxo:
 //    1. Na primeira vez, pede o CÓDIGO DE VÍNCULO (do link do cliente) e
 //       registra o computador. Guarda o token em
-//       C:\ProgramData\Hub360Agente\config.json
+//       C:\ProgramData\HelpDesk-Hub360\config.json
 //    2. Em loop, a cada POLL_SECONDS, manda "estou online" e pega comandos.
 //    3. Executa os comandos e devolve o resultado.
 //
@@ -15,7 +15,7 @@
 //  Compilar (na máquina Windows, com Go instalado):
 //    set GOOS=windows
 //    set GOARCH=amd64
-//    go build -ldflags="-s -w" -o AgenteSuporte.exe main.go
+//    go build -ldflags="-s -w" -o HelpDesk-Hub360.exe main.go
 // =====================================================================
 
 package main
@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.3.0"
+const AgentVersion = "1.4.0"
 const PollSeconds = 15
 
 // ---- Armazenamento local -------------------------------------------
@@ -55,7 +55,7 @@ func configDir() string {
 	if base == "" {
 		base, _ = os.UserConfigDir()
 	}
-	dir := filepath.Join(base, "Hub360Agente")
+	dir := filepath.Join(base, "HelpDesk-Hub360")
 	_ = os.MkdirAll(dir, 0o755)
 	return dir
 }
@@ -83,7 +83,7 @@ func psVisible(script string) string {
 // askCodeDialog mostra uma caixa para digitar o código (sem console).
 func askCodeDialog() string {
 	logf("Pedindo código de vínculo na tela…")
-	out := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Digite o codigo de vinculo do suporte (ex.: K7QM-4XPA):","Hub360 - Agente de Suporte","")`)
+	out := psVisible(`Add-Type -AssemblyName Microsoft.VisualBasic | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox("Digite o codigo de vinculo do suporte (ex.: K7QM-4XPA):","HelpDesk-Hub360","")`)
 	return strings.TrimSpace(out)
 }
 
@@ -488,7 +488,7 @@ func openTicketDialog(c *Config) {
 		"token":         c.Token,
 		"customer_name": name,
 		"title":         title,
-		"description":   strings.TrimSpace(desc) + "\n\n(Aberto pelo Agente de Suporte)",
+		"description":   strings.TrimSpace(desc) + "\n\n(Aberto pelo HelpDesk-Hub360)",
 	})
 	if err != nil || resp == nil {
 		notify("Suporte", "Não foi possível abrir o chamado agora. Tente novamente.")
@@ -526,10 +526,10 @@ func main() {
 		c, err = registerAgent(code)
 		if err != nil {
 			logf("Erro no vínculo: %v", err)
-			notify("Hub360 — Agente", "Não foi possível vincular: "+err.Error())
+			notify("HelpDesk-Hub360", "Não foi possível vincular: "+err.Error())
 			return
 		}
-		notify("Hub360 — Agente", "Computador vinculado ao suporte: "+c.Group)
+		notify("HelpDesk-Hub360", "Computador vinculado ao suporte: "+c.Group)
 	} else {
 		logf("Agente já vinculado ao grupo: %s", c.Group)
 	}
