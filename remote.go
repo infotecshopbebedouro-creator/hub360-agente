@@ -76,19 +76,20 @@ func downscale(src image.Image) *image.RGBA {
 	}
 	nh := h * mw / w
 	dst := image.NewRGBA(image.Rect(0, 0, mw, nh))
-	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	xdraw.NearestNeighbor.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
 	return dst
 }
 
 // Soma de verificação rápida (FNV-1a) dos pixels de um bloco.
 func tileChecksum(img *image.RGBA, r image.Rectangle) uint64 {
 	var h uint64 = 1469598103934665603
-	for y := r.Min.Y; y < r.Max.Y; y++ {
+	// Amostra 1 a cada 3 linhas e pula pixels (passo 12 bytes = 3 pixels)
+	// para detectar mudança rápido, sem varrer todos os pixels (economiza CPU).
+	for y := r.Min.Y; y < r.Max.Y; y += 3 {
 		i0 := img.PixOffset(r.Min.X, y)
 		i1 := img.PixOffset(r.Max.X-1, y) + 4
-		row := img.Pix[i0:i1]
-		for _, b := range row {
-			h ^= uint64(b)
+		for i := i0; i < i1; i += 12 {
+			h ^= uint64(img.Pix[i])
 			h *= 1099511628211
 		}
 	}
@@ -240,6 +241,8 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 	var sums []uint64
 	var cols, rows, curW, curH int
 	first := true
+	idle := 0
+	lastKeyframe := time.Now()
 
 	for {
 		select {
@@ -247,17 +250,21 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 			return
 		default:
 		}
+		// Ritmo: no alvo quando há movimento; mais devagar quando a tela
+		// está parada (economiza muito CPU no micro do cliente).
 		fps := atomic.LoadInt32(&streamFPS)
 		if fps < 1 {
 			fps = 1
 		}
-		time.Sleep(time.Second / time.Duration(fps))
+		sleep := time.Second / time.Duration(fps)
+		if idle > 3 {
+			sleep = 300 * time.Millisecond // tela parada: captura devagar
+		}
+		time.Sleep(sleep)
 
 		if dc.ReadyState() != webrtc.DataChannelStateOpen {
 			return
 		}
-		// Se a fila de envio está cheia, pula o quadro (sem marcar como enviado,
-		// então as mudanças vão no próximo) para não acumular atraso.
 		if dc.BufferedAmount() > maxBufferedKB*1024 {
 			continue
 		}
@@ -268,20 +275,17 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 		img := downscale(raw)
 		w, h := img.Bounds().Dx(), img.Bounds().Dy()
 
-		// Pedido de "reenviar tudo" (ao conectar, trocar monitor ou abrir janela).
 		if atomic.CompareAndSwapInt32(&forceFull, 1, 0) {
 			curW, curH = 0, 0
 		}
 
-		// Tela mudou de tamanho (resolução, monitor, ou largura escolhida):
-		// avisa o navegador e recomeça o cache de blocos.
 		if w != curW || h != curH || first {
 			curW, curH = w, h
 			cols = (w + tileSize - 1) / tileSize
 			rows = (h + tileSize - 1) / tileSize
 			sums = make([]uint64, cols*rows)
 			for i := range sums {
-				sums[i] = 0xFFFFFFFFFFFFFFFF // força enviar tudo
+				sums[i] = 0xFFFFFFFFFFFFFFFF
 			}
 			reset := make([]byte, 5)
 			reset[0] = resetMarker
@@ -289,14 +293,25 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 			binary.LittleEndian.PutUint16(reset[3:], uint16(h))
 			dc.Send(reset)
 			first = false
+			lastKeyframe = time.Now()
 			logf("[tela] tela %dx%d (%d blocos)", w, h, cols*rows)
 		}
 
+		// "Keyframe" periódico: como o tráfego é sem reenvio garantido,
+		// a cada 8s reenviamos tudo para curar blocos que possam ter se perdido.
+		if time.Since(lastKeyframe) > 8*time.Second {
+			for i := range sums {
+				sums[i] = 0xFFFFFFFFFFFFFFFF
+			}
+			lastKeyframe = time.Now()
+		}
+
 		q := int(atomic.LoadInt32(&streamQuality))
+		changed := 0
 		for ty := 0; ty < rows; ty++ {
 			for tx := 0; tx < cols; tx++ {
 				if dc.BufferedAmount() > maxBufferedKB*1024 {
-					break // congestionou: para este quadro, reenvia depois
+					break
 				}
 				x0 := tx * tileSize
 				y0 := ty * tileSize
@@ -312,7 +327,7 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 				sum := tileChecksum(img, rect)
 				idx := ty*cols + tx
 				if sum == sums[idx] {
-					continue // bloco não mudou
+					continue
 				}
 				sub := img.SubImage(rect)
 				var buf bytes.Buffer
@@ -329,7 +344,13 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 					return
 				}
 				sums[idx] = sum
+				changed++
 			}
+		}
+		if changed == 0 {
+			idle++
+		} else {
+			idle = 0
 		}
 	}
 }

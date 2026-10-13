@@ -38,7 +38,7 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.5.0"
+const AgentVersion = "1.6.0"
 const PollSeconds = 45 // batida (status online) — mais espaçada, economiza Base44
 const PingSeconds = 3  // aviso rápido (tela/comandos) — só olha o canal, barato
 
