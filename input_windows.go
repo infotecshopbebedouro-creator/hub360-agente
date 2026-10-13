@@ -11,11 +11,9 @@ import (
 	"github.com/kbinani/screenshot"
 )
 
-// ---- Monitor selecionado -------------------------------------------
-var selectedMonitor int32 // índice do monitor em transmissão
-
+// ---- Monitor selecionado (streamMonitor vem de remote.go) ----------
 func currentMonitor() int {
-	n := int(atomic.LoadInt32(&selectedMonitor))
+	n := int(atomic.LoadInt32(&streamMonitor))
 	if n < 0 || n >= screenshot.NumActiveDisplays() {
 		return 0
 	}
@@ -136,9 +134,6 @@ func moveMouse(xn, yn float64) {
 
 func injectInput(ev inputEvent) {
 	switch ev.T {
-	case "monitor":
-		atomic.StoreInt32(&selectedMonitor, int32(ev.Monitor))
-		return
 	case "move":
 		moveMouse(ev.X, ev.Y)
 	case "down", "up":

@@ -13,17 +13,64 @@ import (
 	"image"
 	"image/jpeg"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
+	xdraw "golang.org/x/image/draw"
 )
 
 const (
-	frameFPS    = 10
-	jpegQuality = 40
-	chunkSize   = 60000 // bytes por pedaço no data channel
-	frameMarker = 0xF1
+	chunkSize     = 60000 // bytes por pedaço no data channel
+	frameMarker   = 0xF1
+	maxBufferedKB = 400 // se o canal tiver mais que isto na fila, pula o frame
 )
+
+// Parâmetros de qualidade ajustáveis em tempo real pelo técnico.
+var (
+	streamQuality int32 = 38   // qualidade JPEG (1-95)
+	streamWidth   int32 = 1366 // largura máxima enviada
+	streamFPS     int32 = 12   // quadros por segundo alvo
+	streamMonitor int32        // monitor em transmissão
+)
+
+func applyQuality(ev inputEvent) {
+	if ev.Quality > 0 {
+		atomic.StoreInt32(&streamQuality, int32(clampInt(ev.Quality, 10, 90)))
+	}
+	if ev.Width > 0 {
+		atomic.StoreInt32(&streamWidth, int32(clampInt(ev.Width, 640, 3840)))
+	}
+	if ev.Fps > 0 {
+		atomic.StoreInt32(&streamFPS, int32(clampInt(ev.Fps, 3, 30)))
+	}
+	logf("[tela] qualidade ajustada: q=%d largura=%d fps=%d",
+		atomic.LoadInt32(&streamQuality), atomic.LoadInt32(&streamWidth), atomic.LoadInt32(&streamFPS))
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// Reduz a imagem se for mais larga que a largura escolhida, mantendo proporção.
+func downscale(src image.Image) image.Image {
+	mw := int(atomic.LoadInt32(&streamWidth))
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= mw {
+		return src
+	}
+	nh := h * mw / w
+	dst := image.NewRGBA(image.Rect(0, 0, mw, nh))
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
+	return dst
+}
 
 var activeSessions sync.Map // sessionID -> *webrtc.PeerConnection
 
@@ -165,28 +212,40 @@ func startRemoteSession(cfg *Config, sessionID string) {
 
 // Captura a tela e envia em pedaços pelo data channel "frames".
 func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
-	ticker := time.NewTicker(time.Second / frameFPS)
-	defer ticker.Stop()
 	var frameID uint32
 
 	for {
 		select {
 		case <-stop:
 			return
-		case <-ticker.C:
+		default:
 		}
+		// Intervalo conforme os quadros por segundo escolhidos (dinâmico).
+		fps := atomic.LoadInt32(&streamFPS)
+		if fps < 1 {
+			fps = 1
+		}
+		time.Sleep(time.Second / time.Duration(fps))
+
 		if dc.ReadyState() != webrtc.DataChannelStateOpen {
 			return
 		}
-		img := captureFrame(currentMonitor())
-		if img == nil {
+		// Controle de congestionamento: se a fila de envio está cheia,
+		// pula este quadro para não acumular atraso (mantém fluidez).
+		if dc.BufferedAmount() > maxBufferedKB*1024 {
+			continue
+		}
+		raw := captureFrame(currentMonitor())
+		if raw == nil {
 			if frameID == 0 {
 				logf("[tela] captura retornou vazio (monitor %d)", currentMonitor())
 			}
 			continue
 		}
+		img := downscale(raw)
 		var buf bytes.Buffer
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+		q := int(atomic.LoadInt32(&streamQuality))
+		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
 			logf("[tela] erro ao codificar JPEG: %v", err)
 			continue
 		}
@@ -237,6 +296,9 @@ type inputEvent struct {
 	Shift   bool    `json:"shift"`
 	Text    string  `json:"text"`
 	Monitor int     `json:"monitor"` // troca de monitor (t="monitor")
+	Quality int     `json:"quality"` // qualidade JPEG (t="quality")
+	Width   int     `json:"width"`   // largura máxima (t="quality")
+	Fps     int     `json:"fps"`     // quadros por segundo (t="quality")
 }
 
 func handleInput(data []byte) {
@@ -244,7 +306,14 @@ func handleInput(data []byte) {
 	if json.Unmarshal(data, &ev) != nil {
 		return
 	}
-	injectInput(ev)
+	switch ev.T {
+	case "quality":
+		applyQuality(ev)
+	case "monitor":
+		atomic.StoreInt32(&streamMonitor, int32(ev.Monitor))
+	default:
+		injectInput(ev)
+	}
 }
 
 // image.Image auxiliar para evitar import não usado em builds sem captura.
