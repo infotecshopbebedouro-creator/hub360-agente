@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	chunkSize     = 60000 // bytes por pedaço no data channel
-	frameMarker   = 0xF1
-	maxBufferedKB = 400 // se o canal tiver mais que isto na fila, pula o frame
+	maxBufferedKB = 400  // se o canal tiver mais que isto na fila, pula o quadro
+	tileSize      = 256  // tamanho do bloco (tile) para enviar só o que mudou
+	resetMarker   = 0xF0 // novo tamanho de tela (limpa o canvas)
+	tileMarker    = 0xF2 // bloco atualizado
 )
 
 // Parâmetros de qualidade ajustáveis em tempo real pelo técnico.
@@ -32,6 +33,7 @@ var (
 	streamWidth   int32 = 1366 // largura máxima enviada
 	streamFPS     int32 = 12   // quadros por segundo alvo
 	streamMonitor int32        // monitor em transmissão
+	forceFull     int32        // 1 = reenviar a tela inteira no próximo quadro
 )
 
 func applyQuality(ev inputEvent) {
@@ -59,17 +61,38 @@ func clampInt(v, lo, hi int) int {
 }
 
 // Reduz a imagem se for mais larga que a largura escolhida, mantendo proporção.
-func downscale(src image.Image) image.Image {
+// Sempre devolve *image.RGBA com origem (0,0), para facilitar o fatiamento.
+func downscale(src image.Image) *image.RGBA {
 	mw := int(atomic.LoadInt32(&streamWidth))
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	if w <= mw {
-		return src
+		if rgba, ok := src.(*image.RGBA); ok && b.Min.X == 0 && b.Min.Y == 0 {
+			return rgba
+		}
+		dst := image.NewRGBA(image.Rect(0, 0, w, h))
+		xdraw.Draw(dst, dst.Bounds(), src, b.Min, xdraw.Src)
+		return dst
 	}
 	nh := h * mw / w
 	dst := image.NewRGBA(image.Rect(0, 0, mw, nh))
 	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, b, xdraw.Over, nil)
 	return dst
+}
+
+// Soma de verificação rápida (FNV-1a) dos pixels de um bloco.
+func tileChecksum(img *image.RGBA, r image.Rectangle) uint64 {
+	var h uint64 = 1469598103934665603
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		i0 := img.PixOffset(r.Min.X, y)
+		i1 := img.PixOffset(r.Max.X-1, y) + 4
+		row := img.Pix[i0:i1]
+		for _, b := range row {
+			h ^= uint64(b)
+			h *= 1099511628211
+		}
+	}
+	return h
 }
 
 var activeSessions sync.Map // sessionID -> *webrtc.PeerConnection
@@ -210,9 +233,13 @@ func startRemoteSession(cfg *Config, sessionID string) {
 	}
 }
 
-// Captura a tela e envia em pedaços pelo data channel "frames".
+// Captura a tela e envia SÓ os blocos (tiles) que mudaram desde o quadro
+// anterior. Isso reduz muito a banda e o uso de CPU quando a tela está
+// quase parada (o caso comum em suporte).
 func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
-	var frameID uint32
+	var sums []uint64
+	var cols, rows, curW, curH int
+	first := true
 
 	for {
 		select {
@@ -220,7 +247,6 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 			return
 		default:
 		}
-		// Intervalo conforme os quadros por segundo escolhidos (dinâmico).
 		fps := atomic.LoadInt32(&streamFPS)
 		if fps < 1 {
 			fps = 1
@@ -230,53 +256,80 @@ func streamFrames(dc *webrtc.DataChannel, stop chan struct{}) {
 		if dc.ReadyState() != webrtc.DataChannelStateOpen {
 			return
 		}
-		// Controle de congestionamento: se a fila de envio está cheia,
-		// pula este quadro para não acumular atraso (mantém fluidez).
+		// Se a fila de envio está cheia, pula o quadro (sem marcar como enviado,
+		// então as mudanças vão no próximo) para não acumular atraso.
 		if dc.BufferedAmount() > maxBufferedKB*1024 {
 			continue
 		}
 		raw := captureFrame(currentMonitor())
 		if raw == nil {
-			if frameID == 0 {
-				logf("[tela] captura retornou vazio (monitor %d)", currentMonitor())
-			}
 			continue
 		}
 		img := downscale(raw)
-		var buf bytes.Buffer
-		q := int(atomic.LoadInt32(&streamQuality))
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
-			logf("[tela] erro ao codificar JPEG: %v", err)
-			continue
-		}
-		if frameID == 0 {
-			logf("[tela] primeiro frame capturado: %dx%d, %d bytes", img.Bounds().Dx(), img.Bounds().Dy(), buf.Len())
-		}
-		data := buf.Bytes()
-		frameID++
-		sendFrame(dc, frameID, data)
-	}
-}
+		w, h := img.Bounds().Dx(), img.Bounds().Dy()
 
-func sendFrame(dc *webrtc.DataChannel, frameID uint32, data []byte) {
-	total := (len(data) + chunkSize - 1) / chunkSize
-	if total == 0 {
-		total = 1
-	}
-	for i := 0; i < total; i++ {
-		start := i * chunkSize
-		end := start + chunkSize
-		if end > len(data) {
-			end = len(data)
+		// Pedido de "reenviar tudo" (ao conectar, trocar monitor ou abrir janela).
+		if atomic.CompareAndSwapInt32(&forceFull, 1, 0) {
+			curW, curH = 0, 0
 		}
-		header := make([]byte, 9)
-		header[0] = frameMarker
-		binary.LittleEndian.PutUint32(header[1:], frameID)
-		binary.LittleEndian.PutUint16(header[5:], uint16(i))
-		binary.LittleEndian.PutUint16(header[7:], uint16(total))
-		packet := append(header, data[start:end]...)
-		if err := dc.Send(packet); err != nil {
-			return
+
+		// Tela mudou de tamanho (resolução, monitor, ou largura escolhida):
+		// avisa o navegador e recomeça o cache de blocos.
+		if w != curW || h != curH || first {
+			curW, curH = w, h
+			cols = (w + tileSize - 1) / tileSize
+			rows = (h + tileSize - 1) / tileSize
+			sums = make([]uint64, cols*rows)
+			for i := range sums {
+				sums[i] = 0xFFFFFFFFFFFFFFFF // força enviar tudo
+			}
+			reset := make([]byte, 5)
+			reset[0] = resetMarker
+			binary.LittleEndian.PutUint16(reset[1:], uint16(w))
+			binary.LittleEndian.PutUint16(reset[3:], uint16(h))
+			dc.Send(reset)
+			first = false
+			logf("[tela] tela %dx%d (%d blocos)", w, h, cols*rows)
+		}
+
+		q := int(atomic.LoadInt32(&streamQuality))
+		for ty := 0; ty < rows; ty++ {
+			for tx := 0; tx < cols; tx++ {
+				if dc.BufferedAmount() > maxBufferedKB*1024 {
+					break // congestionou: para este quadro, reenvia depois
+				}
+				x0 := tx * tileSize
+				y0 := ty * tileSize
+				x1 := x0 + tileSize
+				y1 := y0 + tileSize
+				if x1 > w {
+					x1 = w
+				}
+				if y1 > h {
+					y1 = h
+				}
+				rect := image.Rect(x0, y0, x1, y1)
+				sum := tileChecksum(img, rect)
+				idx := ty*cols + tx
+				if sum == sums[idx] {
+					continue // bloco não mudou
+				}
+				sub := img.SubImage(rect)
+				var buf bytes.Buffer
+				if jpeg.Encode(&buf, sub, &jpeg.Options{Quality: q}) != nil {
+					continue
+				}
+				header := make([]byte, 9)
+				header[0] = tileMarker
+				binary.LittleEndian.PutUint16(header[1:], uint16(x0))
+				binary.LittleEndian.PutUint16(header[3:], uint16(y0))
+				binary.LittleEndian.PutUint16(header[5:], uint16(x1-x0))
+				binary.LittleEndian.PutUint16(header[7:], uint16(y1-y0))
+				if dc.Send(append(header, buf.Bytes()...)) != nil {
+					return
+				}
+				sums[idx] = sum
+			}
 		}
 	}
 }
@@ -311,6 +364,9 @@ func handleInput(data []byte) {
 		applyQuality(ev)
 	case "monitor":
 		atomic.StoreInt32(&streamMonitor, int32(ev.Monitor))
+		atomic.StoreInt32(&forceFull, 1)
+	case "refresh":
+		atomic.StoreInt32(&forceFull, 1)
 	default:
 		injectInput(ev)
 	}

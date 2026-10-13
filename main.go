@@ -38,8 +38,9 @@ import (
 // URL do canal (Worker da Cloudflare). Trocar aqui se mudar o Worker.
 const BridgeURL = "https://hub360-agentetoqueemimplantar.infotecshopbebedouro.workers.dev"
 
-const AgentVersion = "1.4.2"
-const PollSeconds = 15
+const AgentVersion = "1.5.0"
+const PollSeconds = 45 // batida (status online) — mais espaçada, economiza Base44
+const PingSeconds = 3  // aviso rápido (tela/comandos) — só olha o canal, barato
 
 // ---- Armazenamento local -------------------------------------------
 
@@ -491,37 +492,58 @@ func registerAgent(code string) (*Config, error) {
 	return c, nil
 }
 
+// runCommands executa uma lista de comandos recebidos e devolve o resultado.
+func runCommands(c *Config, cmds []any) {
+	for _, raw := range cmds {
+		if cmd, ok := raw.(map[string]any); ok {
+			id, _ := cmd["id"].(string)
+			status, result, sysinfo := execCommand(cmd)
+			report := map[string]any{"token": c.Token, "command_id": id, "status": status, "result_text": result}
+			if sysinfo != nil {
+				report["sysinfo"] = sysinfo
+			}
+			_, _ = postJSON("/agent/report", report)
+		}
+	}
+}
+
+// pingLoop: aviso rápido (a cada 3s). Só consulta o canal (barato) e, quando
+// há algo, inicia a tela na hora ou executa os comandos.
+func pingLoop(c *Config) {
+	for {
+		resp, err := postJSON("/agent/ping", map[string]any{"token": c.Token})
+		if err == nil && resp != nil {
+			if sid, ok := resp["session_id"].(string); ok && sid != "" {
+				logf("[ping] sessão de tela: %s", sid)
+				go startRemoteSession(c, sid)
+			}
+			if cmds, ok := resp["commands"].([]any); ok && len(cmds) > 0 {
+				go runCommands(c, cmds)
+			}
+		}
+		time.Sleep(PingSeconds * time.Second)
+	}
+}
+
+// pollLoop: batida de status online (mais espaçada). Serve de reforço para
+// a tela e para os comandos, caso o aviso rápido falhe.
 func pollLoop(c *Config) {
 	logf("Agente em execução (grupo %s).", c.Group)
 	for {
-		host, _ := os.Hostname()
 		resp, err := postJSON("/agent/poll", map[string]any{
 			"token":    c.Token,
 			"version":  AgentVersion,
 			"user":     os.Getenv("USERNAME"),
 			"monitors": monitorCount(),
 		})
-		_ = host
 		if err == nil && resp != nil {
-			// Sessão de acesso remoto pendente → inicia a transmissão da tela
 			if ps, ok := resp["pending_session"].(map[string]any); ok && ps != nil {
 				if sid, ok := ps["id"].(string); ok && sid != "" {
-					logf("Sessão de tela pendente: %s", sid)
 					go startRemoteSession(c, sid)
 				}
 			}
-			if cmds, ok := resp["commands"].([]any); ok {
-				for _, raw := range cmds {
-					if cmd, ok := raw.(map[string]any); ok {
-						id, _ := cmd["id"].(string)
-						status, result, sysinfo := execCommand(cmd)
-						report := map[string]any{"token": c.Token, "command_id": id, "status": status, "result_text": result}
-						if sysinfo != nil {
-							report["sysinfo"] = sysinfo
-						}
-						_, _ = postJSON("/agent/report", report)
-					}
-				}
+			if cmds, ok := resp["commands"].([]any); ok && len(cmds) > 0 {
+				go runCommands(c, cmds)
 			}
 		}
 		time.Sleep(PollSeconds * time.Second)
@@ -592,6 +614,7 @@ func main() {
 
 	// Mantém o status/comandos rodando em segundo plano…
 	go pollLoop(c)
+	go pingLoop(c)
 	// …e abre o ícone na bandeja (bloqueia a thread principal).
 	runTray(c)
 }
