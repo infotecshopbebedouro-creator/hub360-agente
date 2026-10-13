@@ -1,0 +1,45 @@
+name: Build Agente de Suporte (Windows)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Resolver dependências
+        run: |
+          go get github.com/pion/webrtc/v4
+          go get github.com/kbinani/screenshot
+          go mod tidy
+
+      - name: Compilar para Windows 64 bits
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: go build -ldflags="-s -w -H=windowsgui" -o AgenteSuporte.exe .
+
+      - name: Publicar o executável como artefato
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgenteSuporte
+          path: AgenteSuporte.exe
+
+      - name: Publicar em Releases (download fácil)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Agente de Suporte (última versão)
+          files: AgenteSuporte.exe
