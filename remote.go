@@ -171,7 +171,7 @@ func startRemoteSession(cfg *Config, sessionID string) {
 		select {
 		case <-stop:
 			return
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(300 * time.Millisecond):
 		}
 	}
 	if offer == "" {
@@ -205,7 +205,7 @@ func startRemoteSession(cfg *Config, sessionID string) {
 			select {
 			case <-stop:
 				return
-			case <-time.After(700 * time.Millisecond):
+			case <-time.After(300 * time.Millisecond):
 			}
 			resp, _ := postJSON("/agent/signal", map[string]any{"token": cfg.Token, "session_id": sessionID})
 			if resp == nil {
